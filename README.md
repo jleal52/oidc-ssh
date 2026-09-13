@@ -260,7 +260,13 @@ accounts fall through to the next module (`pam_unix`, keys, …). The module
 needs no line in the `account` stack (`pam_sm_acct_mgmt` returns `PAM_IGNORE`
 so that a stray `account required pam_oidc_ssh.so` cannot let everyone in).
 
-`/etc/ssh/sshd_config` (check with `sshd -t`, then reload):
+This belongs in a drop-in, `/etc/ssh/sshd_config.d/10-oidc-ssh.conf`, not
+appended to `sshd_config`. For each directive sshd keeps the **first** value it
+reads, so a line added at the end loses against anything already set above it —
+a stock `KbdInteractiveAuthentication no` halfway down the file will quietly
+beat a `yes` appended below. Drop-ins win because `sshd_config` pulls them in
+with an `Include` among its first lines. (A `Match` block inside a drop-in ends
+with that file; it does not swallow the rest of `sshd_config`.)
 
 ```
 UsePAM yes
@@ -273,6 +279,14 @@ Match User systems,ops
     AuthenticationMethods keyboard-interactive:pam
     PubkeyAuthentication no
 ```
+
+Check the file parses with `sshd -t`, and then check what sshd will actually
+use — `sshd -T | grep -i kbdinteractive` — before reloading. `sshd -T` prints
+the effective configuration, so it is the only way to see that your value won;
+if it disagrees with what you just wrote, an earlier line is beating you (one
+above the `Include`, or a drop-in that sorts first: they are read in
+alphabetical order, first value wins there too). Without an `Include` line the
+drop-in is never read at all.
 
 `LoginGraceTime` matters: a login can take up to `timeout + 4 × http_timeout`
 (300 s + 40 s = 340 s with the defaults) while sshd's default grace time is
@@ -331,9 +345,18 @@ all. The `--group` values are announced in the authorization request so the
 approver sees what the machine is claiming, and the provider may refuse an
 enrolment whose body does not match what was approved.
 
-Then, in `/etc/ssh/sshd_config`:
+Then the drop-in becomes the following. Note that the new directives are
+global and so must go **above** the `Match` block: everything after a `Match`
+line belongs to that block until the next one or the end of the file, so
+pasting them underneath would silently scope `AuthorizedKeysCommand` to those
+two accounts instead of the whole host.
 
 ```
+UsePAM yes
+KbdInteractiveAuthentication yes
+PasswordAuthentication no
+PermitRootLogin prohibit-password
+LoginGraceTime 400
 AuthorizedKeysCommand /usr/libexec/oidc-ssh/oidc-ssh authorized-keys %u %f
 AuthorizedKeysCommandUser oidc-ssh
 PermitUserEnvironment OIDC_USER,OIDC_SUB
